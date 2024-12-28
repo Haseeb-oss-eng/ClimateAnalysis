@@ -1,0 +1,85 @@
+//Asset Datasets
+var chennai = ee.FeatureCollection("projects/ee-geoinformatics696/assets/Chennai"),
+    mergedTmax = ee.Image("projects/ee-geoinformatics696/assets/imd_Chennai_Ta");
+
+// Define the function for Heat Index and conversion to Fahrenheit
+var toFahrenheit = function(image) {
+  return image
+    .select('tmax')
+    .multiply(1.8)
+    .add(32)
+    .rename('tmax_F') // Rename the band appropriately
+    .copyProperties(image, ['system:time_start']); // Copy the time property
+};
+
+// Calculate Heat Index: HI = 0.5 * {T + 61.0 + [(T-68.0)*1.2] + (RH*0.094)} simplified formula 
+var HI = function(img) {
+  return img.expression(
+    '0.5 * (T + 61.0 + ((T-68.0)*1.2) + (RH*0.094))',
+    {
+      T: img.select('tmax_F'), // Use the Fahrenheit temperature
+      RH: ee.Number(85) // Assume a constant relative humidity of 85%
+    }
+  )
+  .rename('HI')
+  .copyProperties(img, ['system:time_start']); // Copy the time property
+};
+
+// Set the start year and number of years in the dataset
+var startYear = 2020;
+var numYears = 4;
+
+// Define the months
+var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+// Generate band names for all years
+var bandNames = [];
+for (var year = startYear; year < startYear + numYears; year++) {
+  for (var i = 0; i < months.length; i++) {
+    bandNames.push(months[i] + '_' + year);
+  }
+}
+
+// Rename the bands
+var renamedTmax = mergedTmax.rename(bandNames);
+print('Renamed Tmax Image:', renamedTmax);
+
+// Convert the multi-band image into an ImageCollection
+var imageCollection = ee.ImageCollection(
+  bandNames.map(function(bandName) {
+    var parts = ee.String(bandName).split('_');
+    var month = ee.Number.parse(parts.get(0));
+    var year = ee.Number.parse(parts.get(1));
+    var date = ee.Date.fromYMD(year, month, 1);
+    var timestamp = date.millis();
+    return renamedTmax
+      .select([bandName])
+      .rename('tmax')
+      .set({
+        'month': month,
+        'year': year,
+        'system:time_start': timestamp
+      });
+  })
+);
+print('Image Collection:', imageCollection);
+
+// Convert Tmax to Fahrenheit
+var converted_F = imageCollection.map(toFahrenheit);
+print('Converted to Fahrenheit:', converted_F);
+
+// Calculate Heat Index (HI)
+var imd_HI = converted_F.map(HI);
+print('Heat Index (HI) Collection:', imd_HI);
+
+// Display the mean Heat Index on the map
+Map.addLayer(imd_HI.mean().clip(chennai), {}, 'Mean Heat Index (HI)');
+
+// Create a time series chart
+var chart = ui.Chart.image.series({
+  imageCollection: imd_HI,
+  region: chennai,
+  reducer: ee.Reducer.mean(),
+  xProperty: 'system:time_start'
+});
+print(chart);
