@@ -1,0 +1,133 @@
+var chennai = table;
+
+var cmip6_access_cm2 = ee.ImageCollection("NASA/GDDP-CMIP6")
+            .filterDate('2024-01-01','2030-12-31')
+            .select(['tasmax','hurs'])
+            .filter(ee.Filter.eq('model', 'ACCESS-CM2'))
+            .filter(ee.Filter.eq('scenario','ssp245'))
+            .map(function(img){
+              var d = ee.Date(ee.Number(img.get('system:time_start')));
+              var m = ee.Number(d.get('month'));
+              var y = ee.Number(d.get('year'));
+              return img.set({'month':m,'year':y, 'system:time_start': d});
+            });
+
+var cmip6_miroc6 = ee.ImageCollection("NASA/GDDP-CMIP6")
+            .filterDate('2024-01-01','2030-12-31')
+            .select(['tasmax','hurs'])
+            .filter(ee.Filter.eq('model', 'MIROC6'))
+            .filter(ee.Filter.eq('scenario','ssp245'))
+            .map(function(img){
+              var d = ee.Date(ee.Number(img.get('system:time_start')));
+              var m = ee.Number(d.get('month'));
+              var y = ee.Number(d.get('year'));
+              return img.set({'month':m,'year':y, 'system:time_start': d});
+            });
+            
+var months = ee.List.sequence(1,12);
+var startYear = 2024;//define the starting year
+var numYear = 6; //num of years to analyze (ex:50 years)
+var years = ee.List.sequence(startYear,startYear+numYear); 
+
+print(years);
+var byYearMonthAccess = ee.ImageCollection.fromImages(
+    years.map(function(y){
+      return months.map(function(m){
+        return cmip6_access_cm2.filterMetadata('year','equals',y)
+                               .filterMetadata('month','equals',m)
+                               .select(["tasmax","hurs"]).mean()
+                               .set('year',y)
+                               .set('month',m)
+                               .set('system:time_start',ee.Date.fromYMD(y,m,1).millis());
+      });
+    }).flatten()  
+  );
+  
+var byYearMonthMiroc6 = ee.ImageCollection.fromImages(
+    years.map(function(y){
+      return months.map(function(m){
+        return cmip6_miroc6.filterMetadata('year','equals',y)
+                               .filterMetadata('month','equals',m)
+                               .select(["tasmax","hurs"]).mean()
+                               .set('year',y)
+                               .set('month',m)
+                               .set('system:time_start',ee.Date.fromYMD(y,m,1).millis());
+      });
+    }).flatten()  
+);
+
+//print(byYearMonthMiroc6.limit(1));
+
+
+// Calculate Heat Index
+function heatIndex(image) {
+  var d = ee.Date(image.get('system:time_start'));
+  var m = ee.Number(d.get('month'));
+  var y = ee.Number(d.get('year'));
+  return image.expression(
+    '0.5 * (T + 61.0 + ((T-68.0)*1.2) + (RH*0.094))', {
+      T: image.select('tasmax').subtract(273.15).multiply(1.8).add(32),
+      RH: image.select('hurs')
+    }
+  ).rename('heat_index').set({'month': m, 'year': y, 'system:time_start': image.get('system:time_start')});
+}
+
+
+var HI_access = byYearMonthAccess.map(heatIndex);
+var HI_miroc6 = byYearMonthMiroc6.map(heatIndex);
+
+// // Print the first Heat Index image
+print(HI_access.first());
+print(HI_miroc6.first());
+
+
+Map.addLayer(HI_access.mean().clip(chennai), {}, 'Heat Index Access');
+Map.addLayer(HI_miroc6.mean().clip(chennai), {}, 'Heat Index Miroc6');
+
+var chart = ui.Chart.image.series({
+  imageCollection:HI_access, 
+  region:chennai, 
+  reducer:ee.Reducer.mean(), 
+  scale:30,
+});
+print(chart);
+
+var chart1 = ui.Chart.image.series({
+  imageCollection:HI_miroc6, 
+  region:chennai, 
+  reducer:ee.Reducer.mean(), 
+  scale:30,//this is actual scale this resize for analysis
+});
+print(chart1);
+
+// Reduce resolution to 1km
+var reducedResolutionImageAccess = HI_access.mean().reduceResolution({
+  reducer: ee.Reducer.mean(),
+  maxPixels: 1024
+}).reproject({
+  crs: HI_access.mean().projection().crs(),
+  scale: 1000 // Adjust scale as per your needs
+});
+var reducedResolutionImagemiroc6 = HI_miroc6.mean().reduceResolution({
+  reducer: ee.Reducer.mean(),
+  maxPixels: 1024
+}).reproject({
+  crs: 'EPSG:4326',
+  scale: 1000 // Adjust scale as per your needs
+});
+// Export the reduced resolution image
+Export.image.toDrive({
+  image: reducedResolutionImageAccess,
+  description: 'ACCESS_MC2',
+  scale: 1000, // Matches the reduced resolution
+  region: chennai, // Define the region of interest
+  maxPixels: 1e13
+});
+
+Export.image.toDrive({
+  image: reducedResolutionImagemiroc6,
+  description: 'MIROC6',
+  scale: 1000, // Matches the reduced resolution
+  region: chennai, // Define the region of interest
+  maxPixels: 1e13
+});
